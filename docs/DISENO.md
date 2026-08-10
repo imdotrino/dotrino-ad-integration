@@ -93,6 +93,51 @@ prueba **pertenencia a la empresa**, y el paso 5 los une en un solo documento
 firmado. Sin el paso 2, la empresa estaría respaldando una llave que quien pide
 pudo haber puesto de cualquiera.
 
+### 4.1. Cómo sabe el servicio de quién es la llave
+
+No lo sabe de antemano, y **no hay ninguna tabla** que lo diga. Lo aprende porque
+las dos pruebas llegan en el mismo recorrido:
+
+```
+  paso 2  →  «quien está aquí controla la llave K»       (firma de la bóveda)
+  paso 4  →  «quien está aquí es maria@empresa.com»      (token de Microsoft)
+  ───────────────────────────────────────────────────────────────────────────
+  paso 5  →  firma: «la llave K es de maria@empresa.com»
+```
+
+Es el mismo razonamiento que cuando se sube una llave SSH a una cuenta: nadie sabía
+que esa llave era de quien la sube; se supo porque **la subió con la sesión
+iniciada**. Aquí ocurre en un solo recorrido y no queda guardado.
+
+**La unión NO puede depender solo de la sesión.** Si lo único que ata las dos
+pruebas es "el mismo navegador", cabe el ataque clásico de sesión: alguien inicia el
+recorrido con **su** llave y consigue que la víctima complete el acceso de Microsoft
+dentro de esa sesión; el servicio firmaría que la llave del atacante es de la
+víctima. Que el `state` sea impredecible y esté atado a la cookie es necesario, pero
+insuficiente como única defensa.
+
+**Las dos pruebas se atan criptográficamente:**
+
+- El `nonce` que el servicio envía a Microsoft **incluye el hash de la llave `K`**.
+- La prueba que firma la bóveda **incluye ese mismo valor**.
+
+Así el token que vuelve del directorio queda atado a `K`: un token obtenido en otro
+recorrido, con otra llave, no encaja. La unión deja de depender de la sesión.
+
+**Lo que esto prueba, y lo que no.** La afirmación honesta es *"quien controla esta
+llave pudo iniciar sesión como María ahora mismo"*. No prueba que sea María: si
+María entrega su contraseña, quien la reciba obtiene una atestación **para su propia
+llave**. Es un problema del directorio de la empresa, no del ecosistema — pero queda
+escrito, porque es la clase de límite que después se asume resuelto.
+
+**Efecto secundario a decidir (§11).** Como el servicio no guarda nada, *cualquier*
+llave que supere un acceso al directorio queda respaldada: no existe "los
+dispositivos conocidos de María". Con tres equipos obtiene tres atestaciones, y
+ninguna sabe de las otras. Es coherente con el modelo (el vault ya trata cada
+dispositivo como una llave con su certificado) y hace al servicio trivial de
+auditar; una empresa con requisitos estrictos querrá lo contrario —lista de
+dispositivos, aprobación del administrador, límite— y eso obliga a guardar estado.
+
 ## 5. La atestación
 
 **No se inventa un formato.** Es una atestación de
@@ -154,6 +199,34 @@ acceso ninguno (`src/stores/roomStore.js`, `joinRoom`). Hacen falta cuatro cosas
 
 El punto 4 es el que hace que esto sirva de algo. Los otros tres sin él son
 cosmética.
+
+### 6.1. Qué puede hacer cada quien (y qué de esto es de ahora)
+
+La pregunta natural de una empresa no es *quién es*, sino **a qué accede, qué
+guarda y qué modifica**. Casi todo eso se puede dejar para después; una parte no.
+
+**Se puede posponer:** roles finos (leer / escribir / administrar), retención,
+cuotas, borrado, registro de quién hizo qué. Se añade encima sin rehacer nada.
+
+**No se puede posponer:** en un sistema cifrado extremo a extremo, **autorizar la
+lectura es repartir la llave**. Eso no es un permiso que se agregue más tarde: se
+decide el día que se entrega la primera llave de sala. Si se reparte a todo el que
+entra al canal, luego no se le puede "quitar el permiso" a quien ya la tiene — solo
+**rotar** la llave y no dársela, y esa rotación tiene que estar prevista desde el
+principio. De ahí que el punto 4 de arriba sea de ahora aunque los roles sean de
+después.
+
+**Los tres verbos no son iguales**, y conviene decirlo antes de prometer nada:
+
+| Verbo | Se controla |
+|---|---|
+| **Acceder** | **Sí, y criptográficamente.** Sin llave no hay lectura, y no depende de que ningún servidor se porte bien. |
+| **Almacenar** | **No.** Quien descifró un mensaje puede quedárselo. |
+| **Modificar / borrar para todos** | **No se impone.** Es una *petición* al resto de participantes, no una orden que se pueda hacer cumplir. |
+
+No es un defecto que se corrija más adelante: es la propiedad del modelo, la misma
+que el ecosistema ya enuncia —*ninguna app cuida lo que su dueño decide mostrar*—.
+**No se promete borrado remoto ni control de copias**, porque no existen.
 
 ## 7. Altas y bajas
 
@@ -219,6 +292,8 @@ plomería.
 | **Vigencia** | Una jornada es una propuesta. Una empresa con requisitos estrictos querrá una hora; una con portátiles fuera de línea querrá una semana. ¿Configurable, con un máximo? |
 | **Sin conexión al directorio** | Si el servicio no alcanza Active Directory, ¿se sigue con la atestación vigente hasta que caduque, o se corta? |
 | **Varias empresas** | ¿Un empleado puede tener atestaciones de dos organizaciones a la vez en el mismo perfil? |
+| **Dispositivos conocidos** (§4.1) | Sin estado, cualquier llave que supere un acceso al directorio queda respaldada. ¿Se acepta, o se guarda una lista de dispositivos con aprobación del administrador —perdiendo el "no guarda nada"—? |
+| **Roles y rotación de llave de sala** (§6.1) | Los roles finos son de después, pero la **rotación** de la llave al sacar a alguien tiene que estar prevista desde el principio. ¿Rotación automática en cada baja, o manual? |
 | **Distribución** | Contenedor, `.deb` o ambos. Si hay descargable, la versión va en el nombre del archivo (§11.5 de convenciones). |
 
 ## 12. Referencias
