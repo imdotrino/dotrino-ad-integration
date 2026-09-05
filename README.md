@@ -14,6 +14,13 @@ Parte de la línea [Dotrino Enterprise](https://dotrino.com/enterprise) · MIT.
 
 > **Estado: diseño, sin implementar.** Este repositorio contiene por ahora solo la
 > documentación. Diseño completo en [`docs/DISENO.md`](./docs/DISENO.md).
+>
+> **Es la tercera de tres direcciones, y va al final** (orden fijado por el dueño el
+> 2026-09-05): primero entrar en un aparato nuevo dentro del ecosistema
+> ([`dotrino-vault/docs/inicio-de-sesion.md`](../dotrino-vault/docs/inicio-de-sesion.md)),
+> después "Entrar con Dotrino" en aplicaciones ajenas
+> ([`dotrino-sso`](../dotrino-sso/)), y al final esto. Las tres comparten la misma
+> primera pieza: el destinatario y la vigencia en el sobre firmado.
 
 ---
 
