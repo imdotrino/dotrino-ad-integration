@@ -75,7 +75,7 @@ async function main () {
     },
     keyFile: path.join(dirTmp, 'k.json')
   })
-  await b.listen(PORT)
+  await b.listen(PORT, '127.0.0.1')
   paso(`el servicio de la empresa escucha en ${ISSUER}`)
 
   // ---- 1. la bóveda: una cuenta de verdad, con su acta ----

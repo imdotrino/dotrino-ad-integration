@@ -245,7 +245,7 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
     issuer: ISSUER,
     apps: APPS,
     publickey: key.publickey,
-    listen: (p) => new Promise((r) => server.listen(p, () => r(server.address().port))),
+    listen: (p, host) => new Promise((r) => server.listen(p, host, () => r(server.address().port))),
     close: () => { clearInterval(timer); return new Promise((r) => server.close(r)) }
   }
 }
@@ -271,7 +271,7 @@ async function main () {
     keyFile: process.env.AD_KEY_FILE,
     attestationTtlMs: process.env.AD_TTL_HOURS ? Number(process.env.AD_TTL_HOURS) * 3600_000 : undefined
   })
-  await b.listen(PORT)
+  await b.listen(PORT, process.env.AD_HOST)
   console.log(`[ad] directory bridge ${b.issuer} listening on :${PORT} for ${b.apps.join(', ')}`)
 }
 
