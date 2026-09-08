@@ -118,6 +118,7 @@ npm start
 | `AD_APPS` | Las aplicaciones para las que puede firmar, separadas por comas. **Lista cerrada**: lo que no está, no entra. |
 | `AD_REDIRECT_URI` | Por omisión `<AD_ISSUER>/callback`. Tiene que estar registrado en el directorio. |
 | `AD_TTL_HOURS` | Cuánto dura el respaldo. Por omisión 12 h — una jornada. |
+| `AD_HOST` | En qué interfaz escucha. Sin ella escucha en todas; ponla si la máquina tiene varias y solo una debe atender. |
 | `AD_KEY_FILE` | Dónde vive la llave de firma de la empresa. Por omisión `~/.dotrino-ad/signing-key.json`, en 0600. Es lo **único** que este servicio guarda: si se pierde, los respaldos ya emitidos dejan de comprobar. |
 
 Cuatro direcciones, y ninguna más: `GET /challenge` (el reto), `POST /start` (la prueba
