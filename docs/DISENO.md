@@ -1,7 +1,10 @@
 # Diseño — `dotrino-ad-integration` (Active Directory como respaldo de identidad)
 
-> **Estado:** diseño abierto, **sin implementar**. Fija el *qué* y el *cómo*, y
-> deja marcadas las decisiones pendientes (§11).
+> **Estado:** el servicio (§10 fase 2) **está escrito y probado de punta a punta** contra
+> un directorio de verdad, el 2026-09-07. Lo que sigue abierto son las fases 3 a 5, que
+> viven en `dotrino-chat` y `dotrino-proxy`. Las decisiones que la implementación tuvo
+> que cerrar están en §11 con lo que se decidió y por qué; las que siguen abiertas, sin
+> respuesta.
 >
 > **Idioma/estilo:** español neutro (tuteo). Fuente de verdad del ecosistema:
 > [`CLAUDE.md`](../../CLAUDE.md) y
@@ -118,11 +121,17 @@ insuficiente como única defensa.
 
 **Las dos pruebas se atan criptográficamente:**
 
-- El `nonce` que el servicio envía a Microsoft **incluye el hash de la llave `K`**.
-- La prueba que firma la bóveda **incluye ese mismo valor**.
+- El `nonce` que el servicio envía a Microsoft **es el hash de la llave `K`**.
+- La prueba que firma la bóveda va firmada **por esa misma `K`**, así que el servicio la
+  deduce en vez de fiarse de que se la digan (`server/server.js`, `keyFingerprint`).
 
 Así el token que vuelve del directorio queda atado a `K`: un token obtenido en otro
 recorrido, con otra llave, no encaja. La unión deja de depender de la sesión.
+
+**Y el reto de la prueba lo emite el servicio, no la aplicación** (`GET /challenge`).
+Aceptar un reto elegido por quien llama es no comprobar frescura ninguna: una prueba
+capturada valdría igual y el reto sería un adorno. Se emite, se gasta una vez y vence a
+los cinco minutos.
 
 **Lo que esto prueba, y lo que no.** La afirmación honesta es *"quien controla esta
 llave pudo iniciar sesión como María ahora mismo"*. No prueba que sea María: si
@@ -272,8 +281,8 @@ disimularla.
 | Fase | Qué | Repo |
 |---|---|---|
 | **0** | Destinatario y vigencia en el sobre firmado (`aud`, `nonce`, `exp`) | `dotrino-identity` — es la fase 1 de [`dotrino-sso`](../../dotrino-sso/docs/FASES.md) y es prerrequisito |
-| **1** | Publicar y cablear `@dotrino/verifier` (escrito, con tests verdes, sin publicar) | `dotrino-verifier` |
-| **2** | El servicio: OIDC contra Entra ID → atestación firmada | este repo |
+| **1** ✅ | Publicar y cablear `@dotrino/verifier`. **Hecho el 2026-09-07**: 0.2.0 añade el servicio `directory`, el destinatario (`aud`) y los `claims` de la atestación; el pilar sale de `dependencies` a `peerDependencies` | `dotrino-verifier` |
+| **2** ✅ | El servicio: OIDC contra Entra ID → atestación firmada. **Hecho el 2026-09-07**, probado contra un Keycloak de verdad (`test/keycloak.e2e.mjs`) y con la atadura de §4.1 cubierta por una prueba que representa el ataque | este repo |
 | **3** | Salas con política en el chat | `dotrino-chat` |
 | **4** | Comprobación en el proxio (la puerta de verdad) | `dotrino-proxy` |
 | **5** | Llave de sala condicionada a la atestación | `dotrino-chat` |
@@ -282,18 +291,30 @@ disimularla.
 Las fases 3 a 5 son las que convierten esto en un producto; las 0 a 2 son la
 plomería.
 
-## 11. Decisiones pendientes
+## 11. Decisiones
+
+### Cerradas al implementar (2026-09-07)
+
+| Tema | Qué se decidió, y por qué |
+|---|---|
+| **Quién emite el reto** | **El servicio** (`GET /challenge`), de un solo uso y cinco minutos. Si lo eligiera la aplicación, no se estaría comprobando frescura: una prueba capturada valdría igual. |
+| **Cómo se ata la llave** | El `nonce` que va al directorio es el **hash de la llave que firmó la prueba**, deducido por el servicio. No se acepta que se lo digan. |
+| **A qué aplicaciones sirve** | **Lista cerrada** (`AD_APPS`), y el retorno tiene que ser del mismo origen que el destinatario. Sin eso, el servicio es un redirector abierto con una firma de la empresa dentro. |
+| **Cómo vuelve el respaldo** | Por el **`#fragment`** de la aplicación, que no llega a ningún servidor — ni al de ella. Es el patrón de siempre del ecosistema. |
+| **Vigencia** | 12 h por omisión, configurable con `AD_TTL_HOURS`. Se deja sin tope duro: el que lo instala es el dueño del directorio, y ponerle un máximo desde aquí sería decidir por él. |
+| **Grupos anidados** | Se firma **lo que el directorio diga**, sin resolver nada. Resolver de forma recursiva es política de la empresa y cada directorio la expresa a su manera; traducirla aquí sería inventarse una segunda lista de permisos, que es justo lo que §5 evita. |
+| **LDAP crudo** | **No se implementa.** Solo OpenID Connect. El modo degradado obliga a alguien a escribir la contraseña de la empresa en una pantalla que no es la de siempre, que es el hábito exacto que este servicio existe para no enseñar. |
+
+### Abiertas
 
 | Tema | Pregunta |
 |---|---|
 | **Perfil de trabajo** | ¿La empresa exige un perfil aparte del personal, o acepta que el empleado use el suyo? Aparte es más limpio y evita mezclar; exige explicar el cambio de perfil (que hoy obliga a recargar). |
-| **LDAP crudo** | ¿Se implementa el modo degradado o se exige federación? Exigirla deja fuera a empresas pequeñas con AD local. |
-| **Grupos anidados** | Active Directory los tiene; ¿se resuelven de forma recursiva al firmar, o se toma solo la pertenencia directa? |
-| **Vigencia** | Una jornada es una propuesta. Una empresa con requisitos estrictos querrá una hora; una con portátiles fuera de línea querrá una semana. ¿Configurable, con un máximo? |
 | **Sin conexión al directorio** | Si el servicio no alcanza Active Directory, ¿se sigue con la atestación vigente hasta que caduque, o se corta? |
 | **Varias empresas** | ¿Un empleado puede tener atestaciones de dos organizaciones a la vez en el mismo perfil? |
 | **Dispositivos conocidos** (§4.1) | Sin estado, cualquier llave que supere un acceso al directorio queda respaldada. ¿Se acepta, o se guarda una lista de dispositivos con aprobación del administrador —perdiendo el "no guarda nada"—? |
 | **Roles y rotación de llave de sala** (§6.1) | Los roles finos son de después, pero la **rotación** de la llave al sacar a alguien tiene que estar prevista desde el principio. ¿Rotación automática en cada baja, o manual? |
+| **Renovación** | El respaldo dura una jornada y §7 dice que se renueva «en silencio». Hoy renovarlo es rehacer el recorrido entero, con su paso por la pantalla de Microsoft. Que sea silencioso depende de que la sesión del directorio siga viva, y eso no lo decide este servicio. |
 | **Distribución** | Contenedor, `.deb` o ambos. Si hay descargable, la versión va en el nombre del archivo (§11.5 de convenciones). |
 
 ## 12. Referencias

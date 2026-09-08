@@ -12,8 +12,12 @@ aplicaciones sepan a quién están dejando pasar.
 
 Parte de la línea [Dotrino Enterprise](https://dotrino.com/enterprise) · MIT.
 
-> **Estado: diseño, sin implementar.** Este repositorio contiene por ahora solo la
-> documentación. Diseño completo en [`docs/DISENO.md`](./docs/DISENO.md).
+> **Estado: el servicio funciona.** Hecho el 2026-09-07 y probado de punta a punta
+> contra un directorio de verdad (un Keycloak con su realm, su gente y sus grupos),
+> formulario de contraseña incluido: `node test/keycloak.e2e.mjs`. Lo que queda es lo
+> que convierte esto en un producto — salas con política en el chat, la puerta en el
+> proxio y la llave de sala condicionada—, que es trabajo de otros repos
+> ([`docs/DISENO.md`](./docs/DISENO.md) §10, fases 3 a 5).
 >
 > **Es la tercera de tres direcciones, y va al final** (orden fijado por el dueño el
 > 2026-09-05): primero entrar en un aparato nuevo dentro del ecosistema
@@ -92,7 +96,56 @@ Darle de baja corta el acceso de ahí en adelante, no borra lo que se llevó pue
 | [`dotrino-proxy`](../dotrino-proxy/) | Donde el acceso se hace de verdad efectivo. |
 | [`dotrino-sso`](../dotrino-sso/) | El camino inverso (Dotrino como proveedor de identidad). |
 
-## 6. Documentación
+## 6. Cómo se levanta
+
+Node 22 o superior. Corre en la red de la empresa, junto a su directorio.
+
+```bash
+npm install
+AD_ISSUER=https://ad.empresa.com \
+AD_OIDC_DISCOVERY=https://login.microsoftonline.com/<tenant>/v2.0/.well-known/openid-configuration \
+AD_CLIENT_ID=<id de la aplicación registrada> \
+AD_CLIENT_SECRET=<su secreto> \
+AD_APPS=https://chat.empresa.com \
+npm start
+```
+
+| Variable | Qué es |
+|---|---|
+| `AD_ISSUER` | La dirección pública **de este servicio**. Es a quien va dirigida la prueba que firma la bóveda: si no coincide, no vale. |
+| `AD_OIDC_DISCOVERY` | El documento de descubrimiento del directorio (Entra ID, ADFS, Keycloak…). |
+| `AD_CLIENT_ID` / `AD_CLIENT_SECRET` | La aplicación que la empresa registra en su directorio. |
+| `AD_APPS` | Las aplicaciones para las que puede firmar, separadas por comas. **Lista cerrada**: lo que no está, no entra. |
+| `AD_REDIRECT_URI` | Por omisión `<AD_ISSUER>/callback`. Tiene que estar registrado en el directorio. |
+| `AD_TTL_HOURS` | Cuánto dura el respaldo. Por omisión 12 h — una jornada. |
+| `AD_KEY_FILE` | Dónde vive la llave de firma de la empresa. Por omisión `~/.dotrino-ad/signing-key.json`, en 0600. Es lo **único** que este servicio guarda: si se pierde, los respaldos ya emitidos dejan de comprobar. |
+
+Cuatro direcciones, y ninguna más: `GET /challenge` (el reto), `POST /start` (la prueba
+de la bóveda), `GET /callback` (la vuelta del directorio) y `GET /key` (la pública con la
+que se comprueban los respaldos).
+
+### Probarlo sin tener un Active Directory
+
+```bash
+./test/keycloak-setup.sh     # levanta un directorio de prueba en Docker
+node test/keycloak.e2e.mjs   # el recorrido entero contra él
+docker rm -f kc-prueba
+```
+
+`npm test` no necesita nada de eso: usa un directorio de mentira y cubre, además del
+camino feliz, el ataque que este diseño existe para parar (§4.1 del diseño).
+
+### Contra Entra ID de verdad
+
+Dos cosas cambian, y las dos son configuración del directorio, no de aquí:
+
+- **`upn`** hay que pedirlo como *claim* opcional en la aplicación registrada. Sin él, el
+  servicio se queda con `preferred_username` o el correo.
+- **`groups`** llega por omisión como identificadores internos. Para que sean nombres hay
+  que configurarlo en la aplicación (`groupMembershipClaims` con los nombres del local
+  de AD). Lo que el directorio diga es lo que se firma: aquí no se traduce nada.
+
+## 7. Documentación
 
 - [`docs/DISENO.md`](./docs/DISENO.md) — arquitectura, formato del respaldo
   firmado, salas con política, bajas, Entra ID frente a LDAP, qué hay que cambiar

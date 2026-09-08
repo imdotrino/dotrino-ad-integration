@@ -1,0 +1,22 @@
+{
+  "name": "dotrino-ad-integration",
+  "version": "0.1.0",
+  "private": true,
+  "description": "El directorio de la empresa respalda una llave: OpenID Connect contra Active Directory y una atestación firmada, sin guardar nada",
+  "type": "module",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@dotrino/identity": "0.87.0",
+    "@dotrino/verifier": "0.2.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imdotrino/dotrino-ad-integration.git"
+  },
+  "author": "seyacat"
+}
