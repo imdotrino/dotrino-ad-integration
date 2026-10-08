@@ -10,7 +10,7 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@dotrino/identity": "0.87.0",
+    "@dotrino/identity": "0.109.0",
     "@dotrino/verifier": "0.2.0"
   },
   "license": "MIT",
