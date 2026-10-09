@@ -29,6 +29,7 @@
  * ejecución. Lo que se publica es el código.
  */
 
+import { fileURLToPath } from 'node:url'
 import http from 'node:http'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -273,6 +274,11 @@ async function main () {
   })
   await b.listen(PORT, process.env.AD_HOST)
   console.log(`[ad] directory bridge ${b.issuer} listening on :${PORT} for ${b.apps.join(', ')}`)
+  // §15: lo que se queda atrás en un servicio desplegado desde git son sus pilares.
+  try {
+    const { watchDependencies } = await import('@dotrino/update/deps')
+    watchDependencies({ dir: fileURLToPath(new URL('..', import.meta.url)), name: 'ad' })
+  } catch (e) { console.error('[update] could not start the watch:', e.code || e.message) }
 }
 
 if (process.argv[1] && import.meta.url === 'file://' + process.argv[1]) main()

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@dotrino/identity": "0.109.0",
+    "@dotrino/update": "0.6.0",
     "@dotrino/verifier": "0.2.0"
   },
   "license": "MIT",
