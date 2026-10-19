@@ -26,8 +26,8 @@ const b64url = (b) => Buffer.from(b).toString('base64').replace(/\+/g, '-').repl
  * Un directorio de mentira que habla OpenID Connect. Guarda lo que se le pidió al
  * autorizar y devuelve un `id_token` con ESE `nonce` — igual que Entra ID.
  */
-async function directorio ({ upn = 'maria@empresa.com', name = 'María Ruiz', groups = ['Ingenieria', 'Todos'] } = {}) {
-  const codigos = new Map()
+async function fakeDirectory ({ upn = 'maria@empresa.com', name = 'María Ruiz', groups = ['Ingenieria', 'Todos'] } = {}) {
+  const codes = new Map()
   const srv = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x')
     if (url.pathname === '/.well-known/openid-configuration') {
@@ -37,7 +37,7 @@ async function directorio ({ upn = 'maria@empresa.com', name = 'María Ruiz', gr
     if (url.pathname === '/auth') {
       // La persona se identifica (aquí, sin escribir nada) y vuelve con su código.
       const code = crypto.randomUUID()
-      codigos.set(code, { nonce: url.searchParams.get('nonce') })
+      codes.set(code, { nonce: url.searchParams.get('nonce') })
       res.writeHead(302, { location: url.searchParams.get('redirect_uri') + '?code=' + code + '&state=' + url.searchParams.get('state') })
       return res.end()
     }
@@ -46,8 +46,8 @@ async function directorio ({ upn = 'maria@empresa.com', name = 'María Ruiz', gr
       req.on('data', (c) => { b += c })
       return req.on('end', () => {
         const code = new URLSearchParams(b).get('code')
-        const rec = codigos.get(code)
-        codigos.delete(code)
+        const rec = codes.get(code)
+        codes.delete(code)
         res.writeHead(200, { 'content-type': 'application/json' })
         if (!rec) return res.end(JSON.stringify({ error: 'invalid_grant' }))
         const claims = { iss: base, sub: 'u-maria', nonce: rec.nonce, upn, name, groups }
@@ -58,11 +58,11 @@ async function directorio ({ upn = 'maria@empresa.com', name = 'María Ruiz', gr
   })
   await new Promise((r) => srv.listen(0, r))
   const base = 'http://127.0.0.1:' + srv.address().port
-  return { base, discovery: base + '/.well-known/openid-configuration', close: () => srv.close(), codigos }
+  return { base, discovery: base + '/.well-known/openid-configuration', close: () => srv.close(), codes }
 }
 
 /** El servicio de la empresa, escuchando en un puerto libre. */
-async function puente (dir, opts = {}) {
+async function startBridge (dir, opts = {}) {
   const b = await createBridge({
     issuer: ISSUER,
     apps: [APP],
@@ -76,51 +76,51 @@ async function puente (dir, opts = {}) {
 }
 
 /** Una cuenta de verdad, con su acta, pidiendo su prueba como haría la aplicación. */
-async function cuenta () {
+async function makeAccount () {
   const dir = tmp()
   const id = await Identity.connect({ dir })
   return {
     id,
     profileId: (await id.profileActa())?.acta?.profileId || id.me.publickey,
-    prueba: (nonce, audience = ISSUER) => id.requestAssertion({ audience, nonce, scopes: ['id:whoami'] }),
-    borra: () => fs.rmSync(dir, { recursive: true, force: true })
+    proof: (nonce, audience = ISSUER) => id.requestAssertion({ audience, nonce, scopes: ['id:whoami'] }),
+    remove: () => fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
 /** El recorrido entero, como lo hace un navegador: reto → prueba → directorio → atestación. */
-async function recorrido (p, dir, quien, { aud = APP, returnTo = APP + '/entrar' } = {}) {
+async function runFlow (p, dir, who, { aud = APP, returnTo = APP + '/entrar' } = {}) {
   const { nonce } = await (await fetch(p.base + '/challenge')).json()
-  const assertion = await quien.prueba(nonce)
+  const assertion = await who.proof(nonce)
   const r = await fetch(p.base + '/start', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ assertion, nonce, aud, return_to: returnTo })
   })
-  if (!r.ok) return { fallo: await r.json(), status: r.status }
+  if (!r.ok) return { failure: await r.json(), status: r.status }
   const { authorize } = await r.json()
   // El directorio manda al navegador al `redirect_uri`, que aquí hay que reescribir al
   // puerto real del puente (en producción es una URL fija y no hace falta).
-  const vuelta = await fetch(authorize.replace(encodeURIComponent('http://127.0.0.1:0/callback'), encodeURIComponent(p.base + '/callback')), { redirect: 'manual' })
-  const cb = await fetch(vuelta.headers.get('location'), { redirect: 'manual' })
+  const back = await fetch(authorize.replace(encodeURIComponent('http://127.0.0.1:0/callback'), encodeURIComponent(p.base + '/callback')), { redirect: 'manual' })
+  const cb = await fetch(back.headers.get('location'), { redirect: 'manual' })
   return { status: cb.status, location: cb.headers.get('location'), body: cb.status === 302 ? null : await cb.json() }
 }
 
-const atestacionDe = (location) => JSON.parse(Buffer.from(new URL(location).hash.replace('#att=', ''), 'base64url').toString('utf8'))
+const attestationFrom = (location) => JSON.parse(Buffer.from(new URL(location).hash.replace('#att=', ''), 'base64url').toString('utf8'))
 
 test('el directorio respalda la llave: sale una atestación firmada, con grupos y destinatario', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
-  const maria = await cuenta()
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
+  const maria = await makeAccount()
 
-  const r = await recorrido(p, dir, maria)
+  const r = await runFlow(p, dir, maria)
   assert.equal(r.status, 302, JSON.stringify(r.body))
 
-  const att = atestacionDe(r.location)
+  const att = attestationFrom(r.location)
   assert.equal(att.op, 'verify')
   assert.equal(att.ch, 'directory')
   assert.equal(att.claim, 'member')
-  assert.equal(att.sub, maria.profileId, 'respalda la llave que firmó la prueba')
-  assert.equal(att.iss, p.b.publickey, 'la firma es de la empresa')
+  assert.equal(att.sub, maria.profileId, 'backs the key that signed the proof')
+  assert.equal(att.iss, p.b.publickey, 'signed by the company')
   assert.equal(att.aud, APP)
   assert.equal(att.claims.upn, 'maria@empresa.com')
   assert.deepEqual(att.claims.groups, ['Ingenieria', 'Todos'])
@@ -129,130 +129,130 @@ test('el directorio respalda la llave: sale una atestación firmada, con grupos 
   assert.equal((await verifyVerification(att, { audience: APP })).ok, true)
   assert.equal((await verifyVerification(att, { audience: 'https://otra.empresa.com' })).ok, false)
 
-  maria.borra(); await p.close(); dir.close()
+  maria.remove(); await p.close(); dir.close()
 })
 
 test('EL ATAQUE: un token del directorio conseguido con otra llave no respalda la mía', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
-  const atacante = await cuenta()
-  const victima = await cuenta()
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
+  const attacker = await makeAccount()
+  const victim = await makeAccount()
 
   // El atacante empieza SU recorrido y se queda con la URL del directorio…
   const { nonce } = await (await fetch(p.base + '/challenge')).json()
   const r = await fetch(p.base + '/start', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ assertion: await atacante.prueba(nonce), nonce, aud: APP, return_to: APP + '/entrar' })
+    body: JSON.stringify({ assertion: await attacker.proof(nonce), nonce, aud: APP, return_to: APP + '/entrar' })
   })
   const { authorize, state } = await r.json()
 
   // …y consigue que la VÍCTIMA complete el acceso de Microsoft. Como el reto que viaja al
   // directorio es la huella de la llave del atacante, el token vuelve atado a ESA llave.
   const u = new URL(authorize)
-  assert.equal(u.searchParams.get('nonce'), keyFingerprint(atacante.profileId))
-  assert.notEqual(u.searchParams.get('nonce'), keyFingerprint(victima.profileId))
+  assert.equal(u.searchParams.get('nonce'), keyFingerprint(attacker.profileId))
+  assert.notEqual(u.searchParams.get('nonce'), keyFingerprint(victim.profileId))
 
   // Lo que el atacante NO puede hacer es meter en SU recorrido un token del mismo
   // directorio conseguido aparte: el puente compara el reto que vuelve con la huella con la
   // que empezó, y el de un acceso ajeno no es esa.
-  const suelto = await fetch(dir.base + '/auth?' + new URLSearchParams({ redirect_uri: p.base + '/callback', state, nonce: 'de-otro-recorrido' }), { redirect: 'manual' })
-  const cb = await fetch(suelto.headers.get('location'), { redirect: 'manual' })
+  const loose = await fetch(dir.base + '/auth?' + new URLSearchParams({ redirect_uri: p.base + '/callback', state, nonce: 'de-otro-recorrido' }), { redirect: 'manual' })
+  const cb = await fetch(loose.headers.get('location'), { redirect: 'manual' })
   assert.equal(cb.status, 401)
   assert.equal((await cb.json()).error, 'not_bound')
 
-  atacante.borra(); victima.borra(); await p.close(); dir.close()
+  attacker.remove(); victim.remove(); await p.close(); dir.close()
 })
 
 test('el reto lo emite el servicio: uno inventado o repetido no entra', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
-  const maria = await cuenta()
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
+  const maria = await makeAccount()
 
-  const inventado = await fetch(p.base + '/start', {
+  const madeUp = await fetch(p.base + '/start', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ assertion: await maria.prueba('me-lo-invento'), nonce: 'me-lo-invento', aud: APP, return_to: APP + '/' })
+    body: JSON.stringify({ assertion: await maria.proof('me-lo-invento'), nonce: 'me-lo-invento', aud: APP, return_to: APP + '/' })
   })
-  assert.equal(inventado.status, 400)
-  assert.equal((await inventado.json()).error, 'unknown_challenge')
+  assert.equal(madeUp.status, 400)
+  assert.equal((await madeUp.json()).error, 'unknown_challenge')
 
   // Y el que sí emitió el servicio vale UNA vez.
   const { nonce } = await (await fetch(p.base + '/challenge')).json()
-  const assertion = await maria.prueba(nonce)
-  const cuerpo = JSON.stringify({ assertion, nonce, aud: APP, return_to: APP + '/' })
-  const cab = { method: 'POST', headers: { 'content-type': 'application/json' }, body: cuerpo }
-  assert.equal((await fetch(p.base + '/start', cab)).status, 200)
-  assert.equal((await fetch(p.base + '/start', cab)).status, 400, 'el mismo reto no se reutiliza')
+  const assertion = await maria.proof(nonce)
+  const body = JSON.stringify({ assertion, nonce, aud: APP, return_to: APP + '/' })
+  const init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: body }
+  assert.equal((await fetch(p.base + '/start', init)).status, 200)
+  assert.equal((await fetch(p.base + '/start', init)).status, 400, 'the same challenge is not reused')
 
-  maria.borra(); await p.close(); dir.close()
+  maria.remove(); await p.close(); dir.close()
 })
 
 test('una prueba dirigida a otro servicio no vale aquí', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
-  const maria = await cuenta()
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
+  const maria = await makeAccount()
 
   const { nonce } = await (await fetch(p.base + '/challenge')).json()
   const r = await fetch(p.base + '/start', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ assertion: await maria.prueba(nonce, 'https://ad.otraempresa.com'), nonce, aud: APP, return_to: APP + '/' })
+    body: JSON.stringify({ assertion: await maria.proof(nonce, 'https://ad.otraempresa.com'), nonce, aud: APP, return_to: APP + '/' })
   })
   assert.equal(r.status, 401)
   assert.equal((await r.json()).reason, 'otro-destinatario')
 
-  maria.borra(); await p.close(); dir.close()
+  maria.remove(); await p.close(); dir.close()
 })
 
 test('la lista de aplicaciones es cerrada, y el retorno tiene que ser de la misma', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
-  const maria = await cuenta()
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
+  const maria = await makeAccount()
 
-  const pide = async (aud, returnTo) => {
+  const ask = async (aud, returnTo) => {
     const { nonce } = await (await fetch(p.base + '/challenge')).json()
     const r = await fetch(p.base + '/start', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ assertion: await maria.prueba(nonce), nonce, aud, return_to: returnTo })
+      body: JSON.stringify({ assertion: await maria.proof(nonce), nonce, aud, return_to: returnTo })
     })
     return { status: r.status, ...(await r.json()) }
   }
 
-  assert.equal((await pide('https://no-registrada.com', 'https://no-registrada.com/')).error, 'unknown_app')
+  assert.equal((await ask('https://no-registrada.com', 'https://no-registrada.com/')).error, 'unknown_app')
   // Un retorno a otro sitio con una firma de la empresa dentro es un redirector abierto.
-  assert.equal((await pide(APP, 'https://malo.example/roba')).error, 'return_to_mismatch')
+  assert.equal((await ask(APP, 'https://malo.example/roba')).error, 'return_to_mismatch')
 
-  maria.borra(); await p.close(); dir.close()
+  maria.remove(); await p.close(); dir.close()
 })
 
 test('un recorrido se completa una sola vez', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
-  const maria = await cuenta()
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
+  const maria = await makeAccount()
 
   const { nonce } = await (await fetch(p.base + '/challenge')).json()
   const { authorize } = await (await fetch(p.base + '/start', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ assertion: await maria.prueba(nonce), nonce, aud: APP, return_to: APP + '/' })
+    body: JSON.stringify({ assertion: await maria.proof(nonce), nonce, aud: APP, return_to: APP + '/' })
   })).json()
 
   const u = authorize.replace(encodeURIComponent('http://127.0.0.1:0/callback'), encodeURIComponent(p.base + '/callback'))
-  const vuelta = await fetch(u, { redirect: 'manual' })
-  const donde = vuelta.headers.get('location')
-  assert.equal((await fetch(donde, { redirect: 'manual' })).status, 302)
-  const otra = await fetch(donde, { redirect: 'manual' })
-  assert.equal(otra.status, 400)
-  assert.equal((await otra.json()).error, 'unknown_flow')
+  const back = await fetch(u, { redirect: 'manual' })
+  const where = back.headers.get('location')
+  assert.equal((await fetch(where, { redirect: 'manual' })).status, 302)
+  const again = await fetch(where, { redirect: 'manual' })
+  assert.equal(again.status, 400)
+  assert.equal((await again.json()).error, 'unknown_flow')
 
-  maria.borra(); await p.close(); dir.close()
+  maria.remove(); await p.close(); dir.close()
 })
 
 test('el servicio publica su llave, y es con la que firma', async () => {
-  const dir = await directorio()
-  const p = await puente(dir)
+  const dir = await fakeDirectory()
+  const p = await startBridge(dir)
   const k = await (await fetch(p.base + '/key')).json()
   assert.equal(k.issuer, ISSUER)
   assert.equal(k.publickey, p.b.publickey)

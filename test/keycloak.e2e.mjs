@@ -28,39 +28,39 @@ const USER = process.env.KC_USER || 'maria'
 const PASS = process.env.KC_PASS || 'prueba1234'
 
 /** Un navegador de mentira: guarda las galletas y sigue los saltos a mano. */
-function navegador () {
-  const galletas = new Map()
-  const guarda = (r) => {
+function browser () {
+  const cookies = new Map()
+  const store = (r) => {
     for (const c of r.headers.getSetCookie?.() || []) {
       const [kv] = c.split(';')
       const i = kv.indexOf('=')
-      galletas.set(kv.slice(0, i).trim(), kv.slice(i + 1).trim())
+      cookies.set(kv.slice(0, i).trim(), kv.slice(i + 1).trim())
     }
   }
-  const cabecera = () => [...galletas].map(([k, v]) => `${k}=${v}`).join('; ')
+  const cookieHeader = () => [...cookies].map(([k, v]) => `${k}=${v}`).join('; ')
   return {
-    async ir (url, init = {}) {
-      const r = await fetch(url, { ...init, redirect: 'manual', headers: { ...(init.headers || {}), cookie: cabecera() } })
-      guarda(r)
+    async go (url, init = {}) {
+      const r = await fetch(url, { ...init, redirect: 'manual', headers: { ...(init.headers || {}), cookie: cookieHeader() } })
+      store(r)
       return r
     },
     /** Sigue saltos hasta salir del dominio del directorio. */
-    async seguir (r, hasta) {
+    async follow (r, until) {
       let cur = r
       for (let i = 0; i < 10 && cur.status >= 300 && cur.status < 400; i++) {
         const loc = new URL(cur.headers.get('location'), KC).toString()
-        if (hasta && loc.startsWith(hasta)) return { fuera: loc, r: cur }
-        cur = await this.ir(loc)
+        if (until && loc.startsWith(until)) return { out: loc, r: cur }
+        cur = await this.go(loc)
       }
-      return { fuera: null, r: cur }
+      return { out: null, r: cur }
     }
   }
 }
 
-const paso = (t) => console.log('  · ' + t)
+const step = (t) => console.log('  · ' + t)
 
 async function main () {
-  console.log(`Keycloak en ${KC}, realm «${REALM}»`)
+  console.log(`Keycloak at ${KC}, realm "${REALM}"`)
   const dirTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-e2e-'))
 
   const b = await createBridge({
@@ -76,12 +76,12 @@ async function main () {
     keyFile: path.join(dirTmp, 'k.json')
   })
   await b.listen(PORT, '127.0.0.1')
-  paso(`el servicio de la empresa escucha en ${ISSUER}`)
+  step(`company service listening on ${ISSUER}`)
 
   // ---- 1. la bóveda: una cuenta de verdad, con su acta ----
   const id = await Identity.connect({ dir: dirTmp })
   const profileId = (await id.profileActa())?.acta?.profileId || id.me.publickey
-  paso('la bóveda tiene su perfil de trabajo')
+  step('vault has its work profile')
 
   // ---- 2. el reto lo emite quien verifica, y la bóveda firma la prueba ----
   const { nonce } = await (await fetch(ISSUER + '/challenge')).json()
@@ -91,52 +91,52 @@ async function main () {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ assertion, nonce, aud: APP, return_to: APP + '/entrar' })
   })
-  const arranque = await r.text()
-  assert.equal(r.status, 200, arranque)
-  const { authorize } = JSON.parse(arranque)
-  assert.equal(new URL(authorize).searchParams.get('nonce'), keyFingerprint(profileId), 'el reto al directorio es la huella de la llave')
-  paso('la prueba de la bóveda vale, y el reto al directorio va atado a la llave')
+  const startBody = await r.text()
+  assert.equal(r.status, 200, startBody)
+  const { authorize } = JSON.parse(startBody)
+  assert.equal(new URL(authorize).searchParams.get('nonce'), keyFingerprint(profileId), 'the directory nonce is the key fingerprint')
+  step('vault proof accepted; directory nonce bound to the key')
 
   // ---- 3. la pantalla de siempre: María escribe su contraseña en Keycloak ----
-  const nav = navegador()
-  const login = await nav.ir(authorize)
+  const nav = browser()
+  const login = await nav.go(authorize)
   const html = await login.text()
-  const accion = /action="([^"]+)"/.exec(html)?.[1]?.replace(/&amp;/g, '&')
-  assert.ok(accion, 'no se encontró el formulario de acceso')
-  const enviado = await nav.ir(accion, {
+  const action = /action="([^"]+)"/.exec(html)?.[1]?.replace(/&amp;/g, '&')
+  assert.ok(action, 'login form not found')
+  const sent = await nav.go(action, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ username: USER, password: PASS, credentialId: '' })
   })
-  paso(`«${USER}» se identificó en el directorio`)
+  step(`"${USER}" signed in to the directory`)
 
   // ---- 4. vuelve al servicio, que ata las dos pruebas y firma ----
-  const { fuera } = await nav.seguir(enviado, ISSUER)
-  assert.ok(fuera, 'el directorio no devolvió al servicio')
-  const cb = await fetch(fuera, { redirect: 'manual' })
+  const { out } = await nav.follow(sent, ISSUER)
+  assert.ok(out, 'the directory did not return to the service')
+  const cb = await fetch(out, { redirect: 'manual' })
   assert.equal(cb.status, 302, cb.status === 302 ? '' : await cb.text())
 
-  const destino = cb.headers.get('location')
-  assert.ok(destino.startsWith(APP), 'el retorno es la aplicación, y nadie más')
-  const att = JSON.parse(Buffer.from(new URL(destino).hash.replace('#att=', ''), 'base64url').toString('utf8'))
-  paso('el servicio firmó la atestación y devolvió a la aplicación por el #fragment')
+  const dest = cb.headers.get('location')
+  assert.ok(dest.startsWith(APP), 'the return goes to the app and nowhere else')
+  const att = JSON.parse(Buffer.from(new URL(dest).hash.replace('#att=', ''), 'base64url').toString('utf8'))
+  step('service signed the attestation and returned to the app via #fragment')
 
   // ---- 5. lo que la aplicación comprueba ----
   assert.equal(att.ch, 'directory')
   assert.equal(att.claim, 'member')
   assert.equal(att.sub, profileId)
   assert.equal(att.aud, APP)
-  assert.equal((await verifyVerification(att, { audience: APP })).ok, true, 'la firma de la empresa no valida')
+  assert.equal((await verifyVerification(att, { audience: APP })).ok, true, 'the company signature does not verify')
   assert.equal((await verifyVerification(att, { audience: 'https://otra.empresa.com' })).ok, false)
 
-  console.log('\n  atestación:', JSON.stringify({ upn: att.claims.upn, displayName: att.claims.displayName, groups: att.claims.groups }, null, 0))
-  console.log('  vigencia :', new Date(att.ts).toISOString(), '→', new Date(att.exp).toISOString())
-  console.log('  firmada  por la empresa, para', att.aud)
-  console.log('\nOK — el directorio respalda la llave de punta a punta.')
+  console.log('\n  attestation:', JSON.stringify({ upn: att.claims.upn, displayName: att.claims.displayName, groups: att.claims.groups }, null, 0))
+  console.log('  validity   :', new Date(att.ts).toISOString(), '→', new Date(att.exp).toISOString())
+  console.log('  signed by the company, for', att.aud)
+  console.log('\nOK — the directory backs the key end to end.')
 
   await b.close()
   fs.rmSync(dirTmp, { recursive: true, force: true })
   process.exit(0)
 }
 
-main().catch((e) => { console.error('FALLÓ:', e?.message || e); process.exit(1) })
+main().catch((e) => { console.error('FAILED:', e?.message || e); process.exit(1) })

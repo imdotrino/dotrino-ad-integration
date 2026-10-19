@@ -96,16 +96,16 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
   const key = await loadOrCreateKey(keyFile || path.join(process.env.HOME || '/tmp', '.dotrino-ad', 'signing-key.json'))
 
   /** Retos y recorridos en vuelo. En memoria y de minutos: no hay nada que filtrar. */
-  const retos = new Map()   // nonce → exp
-  const enCurso = new Map() // state → { fingerprint, sub, aud, returnTo, exp }
+  const challenges = new Map()   // nonce → exp
+  const inFlight = new Map() // state → { fingerprint, sub, aud, returnTo, exp }
   const sweep = () => {
     const t = Date.now()
-    for (const [k, exp] of retos) if (exp <= t) retos.delete(k)
-    for (const [k, v] of enCurso) if (v.exp <= t) enCurso.delete(k)
+    for (const [k, exp] of challenges) if (exp <= t) challenges.delete(k)
+    for (const [k, v] of inFlight) if (v.exp <= t) inFlight.delete(k)
   }
 
   let conf = null
-  const descubrir = async () => (conf ||= await (await fetchImpl(oidc.discovery)).json())
+  const discover = async () => (conf ||= await (await fetchImpl(oidc.discovery)).json())
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, ISSUER)
@@ -133,7 +133,7 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
       if (url.pathname === '/challenge') {
         sweep()
         const nonce = b64url(crypto.randomBytes(24))
-        retos.set(nonce, Date.now() + CHALLENGE_TTL_MS)
+        challenges.set(nonce, Date.now() + CHALLENGE_TTL_MS)
         return json(res, 200, { nonce, audience: ISSUER, expiresIn: CHALLENGE_TTL_MS / 1000 })
       }
 
@@ -143,17 +143,17 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
         const b = JSON.parse((await readBody(req)) || '{}')
 
         const aud = String(b.aud || '').trim().replace(/\/+$/, '')
-        if (!APPS.includes(aud)) return json(res, 400, { error: 'unknown_app', message: 'esa aplicación no está en la lista del servicio' })
+        if (!APPS.includes(aud)) return json(res, 400, { error: 'unknown_app', message: 'that app is not in the service allowlist' })
         const returnTo = String(b.return_to || '').trim()
         if (!returnTo) return json(res, 400, { error: 'no_return_to' })
         // A dónde se devuelve el navegador: al MISMO sitio para el que se firma. Si no,
         // esto es un redirector abierto con una firma de la empresa dentro.
         let ok = false
         try { ok = new URL(returnTo).origin === new URL(aud).origin } catch { ok = false }
-        if (!ok) return json(res, 400, { error: 'return_to_mismatch', message: 'el retorno tiene que ser de la misma aplicación' })
+        if (!ok) return json(res, 400, { error: 'return_to_mismatch', message: 'return_to must belong to the same app' })
 
         const nonce = String(b.nonce || '')
-        if (!retos.delete(nonce)) return json(res, 400, { error: 'unknown_challenge', message: 'ese reto no es de aquí o ya venció' })
+        if (!challenges.delete(nonce)) return json(res, 400, { error: 'unknown_challenge', message: 'unknown or expired challenge' })
 
         const v = await verifyAssertion(b.assertion, { audience: ISSUER, nonce })
         if (!v.ok) return json(res, 401, { error: 'bad_assertion', reason: v.reason })
@@ -161,9 +161,9 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
         const state = b64url(crypto.randomBytes(24))
         // EL RETO QUE VA AL DIRECTORIO ES LA HUELLA DE LA LLAVE (DISENO §4.1).
         const fingerprint = keyFingerprint(v.profileId)
-        enCurso.set(state, { fingerprint, sub: v.profileId, aud, returnTo, exp: Date.now() + FLOW_TTL_MS })
+        inFlight.set(state, { fingerprint, sub: v.profileId, aud, returnTo, exp: Date.now() + FLOW_TTL_MS })
 
-        const c = await descubrir()
+        const c = await discover()
         const q = new URLSearchParams({
           response_type: 'code',
           client_id: oidc.clientId,
@@ -179,14 +179,14 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
       if (url.pathname === '/callback' && req.method === 'GET') {
         sweep()
         const state = url.searchParams.get('state') || ''
-        const rec = enCurso.get(state)
-        if (rec) enCurso.delete(state)   // un recorrido se completa UNA vez
-        if (!rec) return json(res, 400, { error: 'unknown_flow', message: 'ese recorrido no existe o ya venció' })
+        const rec = inFlight.get(state)
+        if (rec) inFlight.delete(state)   // un recorrido se completa UNA vez
+        if (!rec) return json(res, 400, { error: 'unknown_flow', message: 'unknown or expired flow' })
 
         const code = url.searchParams.get('code') || ''
         if (!code) return json(res, 400, { error: 'no_code', detail: url.searchParams.get('error') || null })
 
-        const c = await descubrir()
+        const c = await discover()
         const tr = await fetchImpl(c.token_endpoint, {
           method: 'POST',
           headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -205,10 +205,10 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
         // LA ATADURA. Si el reto que vuelve no es la huella de la llave con la que se
         // empezó, este token es de OTRO recorrido: se para y se dice.
         if (claims.nonce !== rec.fingerprint) {
-          return json(res, 401, { error: 'not_bound', message: 'el token del directorio no está atado a esta llave' })
+          return json(res, 401, { error: 'not_bound', message: 'the directory token is not bound to this key' })
         }
         const upn = claims.upn || claims.preferred_username || claims.email
-        if (!upn) return json(res, 401, { error: 'no_upn', message: 'el directorio no dice quién es' })
+        if (!upn) return json(res, 401, { error: 'no_upn', message: 'the directory did not say who the user is' })
 
         const att = await signVerification({
           verifierKey: key.privateJwk,
