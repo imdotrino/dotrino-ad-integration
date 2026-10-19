@@ -200,7 +200,7 @@ test('una prueba dirigida a otro servicio no vale aquí', async () => {
     body: JSON.stringify({ assertion: await maria.proof(nonce, 'https://ad.otraempresa.com'), nonce, aud: APP, return_to: APP + '/' })
   })
   assert.equal(r.status, 401)
-  assert.equal((await r.json()).reason, 'otro-destinatario')
+  assert.equal((await r.json()).reason, 'other-audience')
 
   maria.remove(); await p.close(); dir.close()
 })
