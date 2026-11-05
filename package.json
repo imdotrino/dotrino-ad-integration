@@ -7,7 +7,8 @@
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@dotrino/identity": "0.121.8",
@@ -19,5 +20,9 @@
     "type": "git",
     "url": "git+https://github.com/imdotrino/dotrino-ad-integration.git"
   },
-  "author": "seyacat"
+  "author": "seyacat",
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  }
 }

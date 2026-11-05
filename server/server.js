@@ -42,26 +42,46 @@ const PORT = Number(process.env.PORT || 8099)
 const CHALLENGE_TTL_MS = 5 * 60 * 1000
 const FLOW_TTL_MS = 10 * 60 * 1000
 
+/**
+ * @param {http.ServerResponse} res
+ * @param {number} status
+ * @param {unknown} obj
+ */
 const json = (res, status, obj) => {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
   res.end(JSON.stringify(obj))
 }
+/**
+ * @param {http.IncomingMessage} req
+ * @returns {Promise<string>}
+ */
 const readBody = (req) => new Promise((resolve, reject) => {
   let b = ''
-  req.on('data', (c) => { b += c; if (b.length > 64 * 1024) { reject(new Error('body too large')); req.destroy() } })
+  req.on('data', (/** @type {Buffer} */ c) => { b += c; if (b.length > 64 * 1024) { reject(new Error('body too large')); req.destroy() } })
   req.on('end', () => resolve(b))
   req.on('error', reject)
 })
+/** @param {Buffer|Uint8Array|string} buf */
 const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+/** @param {unknown} s */
 const unb64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64')
 
 /**
  * La huella de la llave que se está respaldando: es EL valor que ata las dos pruebas.
  * `pubkeyId` no sirve aquí — es corto a propósito, para que una persona lo lea en voz alta.
+ *
+ * @param {string} publickey
+ * @returns {string}
  */
 export const keyFingerprint = (publickey) => b64url(crypto.createHash('sha256').update(String(publickey)).digest())
 
-/** La llave de firma de la EMPRESA. Es lo único que este servicio custodia. */
+/**
+ * La llave de firma de la EMPRESA. Es lo único que este servicio custodia.
+ *
+ * @typedef {{ publickey: string, privateJwk: import('node:crypto').JsonWebKey, createdAt?: number }} SigningKey
+ * @param {string} file
+ * @returns {Promise<SigningKey>}
+ */
 async function loadOrCreateKey (file) {
   if (fs.existsSync(file)) {
     const k = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -75,13 +95,36 @@ async function loadOrCreateKey (file) {
 }
 
 /**
+ * @typedef {object} OidcConfig
+ * @property {string} [discovery]     URL del documento `.well-known/openid-configuration` (obligatoria)
+ * @property {string} [clientId]      (obligatorio)
+ * @property {string} [clientSecret]
+ * @property {string} [redirectUri]   por defecto `<issuer>/callback`
+ * @property {string} [scope]         por defecto `openid profile email`
+ *
+ * @typedef {object} BridgeConfig
+ * @property {string} [issuer]        URL pública de ESTE servicio — es el `aud` de la prueba de la bóveda (obligatoria)
+ * @property {string[]} [apps]        las aplicaciones para las que puede firmar. Cerrada: lo que no está, no entra
+ * @property {OidcConfig} [oidc]
+ * @property {string} [keyFile]       dónde vive la llave de firma
+ * @property {number} [attestationTtlMs]
+ * @property {typeof fetch} [fetchImpl]
+ *
+ * @typedef {object} Bridge
+ * @property {http.Server} server
+ * @property {string} issuer
+ * @property {string[]} apps
+ * @property {string} publickey
+ * @property {(port?: number, host?: string) => Promise<number>} listen   resolves with the port it bound
+ * @property {() => Promise<unknown>} close
+ */
+
+/**
  * Un servicio, con su configuración. Factoría y no módulo con estado: así se levanta más de
  * uno (las pruebas, o una empresa con dos directorios) sin que compartan nada.
  *
- * @param {object} cfg
- * @param {string} cfg.issuer      URL pública de ESTE servicio — es el `aud` de la prueba de la bóveda
- * @param {string[]} cfg.apps      las aplicaciones para las que puede firmar. Cerrada: lo que no está, no entra
- * @param {object} cfg.oidc        { discovery, clientId, clientSecret, redirectUri, scope }
+ * @param {BridgeConfig} [cfg]
+ * @returns {Promise<Bridge>}
  */
 export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, attestationTtlMs = 12 * 60 * 60 * 1000, fetchImpl = fetch } = {}) {
   const ISSUER = String(issuer || '').trim().replace(/\/+$/, '')
@@ -96,7 +139,9 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
   const key = await loadOrCreateKey(keyFile || path.join(process.env.HOME || '/tmp', '.dotrino-ad', 'signing-key.json'))
 
   /** Retos y recorridos en vuelo. En memoria y de minutos: no hay nada que filtrar. */
+  /** @type {Map<string, number>} */
   const challenges = new Map()   // nonce → exp
+  /** @type {Map<string, { fingerprint: string, sub: string, aud: string, returnTo: string, exp: number }>} */
   const inFlight = new Map() // state → { fingerprint, sub, aud, returnTo, exp }
   const sweep = () => {
     const t = Date.now()
@@ -104,11 +149,13 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
     for (const [k, v] of inFlight) if (v.exp <= t) inFlight.delete(k)
   }
 
+  /** @type {{ authorization_endpoint: string, token_endpoint: string } | null} */
   let conf = null
-  const discover = async () => (conf ||= await (await fetchImpl(oidc.discovery)).json())
+  const discover = async () => (conf ||= /** @type {{ authorization_endpoint: string, token_endpoint: string }} */ (await (await fetchImpl(/** @type {string} */ (oidc.discovery))).json()))
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, ISSUER)
+    // `req.url` always exists on a request that came through `http.Server`.
+    const url = new URL(/** @type {string} */ (req.url), ISSUER)
     try {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
@@ -166,7 +213,7 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
         const c = await discover()
         const q = new URLSearchParams({
           response_type: 'code',
-          client_id: oidc.clientId,
+          client_id: /** @type {string} */ (oidc.clientId), // checked when the bridge was created
           redirect_uri: REDIRECT,
           scope: oidc.scope || 'openid profile email',
           state,
@@ -194,11 +241,11 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
             grant_type: 'authorization_code',
             code,
             redirect_uri: REDIRECT,
-            client_id: oidc.clientId,
+            client_id: /** @type {string} */ (oidc.clientId), // checked when the bridge was created
             ...(oidc.clientSecret ? { client_secret: oidc.clientSecret } : {})
           })
         })
-        const tok = await tr.json()
+        const tok = /** @type {{ id_token?: string, error?: string, error_description?: string }} */ (await tr.json())
         if (!tok.id_token) return json(res, 401, { error: 'no_id_token', detail: tok.error_description || tok.error || null })
 
         const claims = JSON.parse(unb64url(tok.id_token.split('.')[1]).toString('utf8'))
@@ -235,7 +282,7 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
 
       return json(res, 404, { error: 'not_found' })
     } catch (e) {
-      return json(res, 500, { error: 'server_error', detail: e?.message || String(e) })
+      return json(res, 500, { error: 'server_error', detail: /** @type {{ message?: string } | null | undefined} */ (e)?.message || String(e) })
     }
   })
 
@@ -246,7 +293,7 @@ export async function createBridge ({ issuer, apps = [], oidc = {}, keyFile, att
     issuer: ISSUER,
     apps: APPS,
     publickey: key.publickey,
-    listen: (p, host) => new Promise((r) => server.listen(p, host, () => r(server.address().port))),
+    listen: (p, host) => new Promise((r) => server.listen(p, host, () => r(/** @type {import('node:net').AddressInfo} */ (server.address()).port))),
     close: () => { clearInterval(timer); return new Promise((r) => server.close(r)) }
   }
 }
@@ -278,7 +325,7 @@ async function main () {
   try {
     const { watchDependencies } = await import('@dotrino/update/deps')
     watchDependencies({ dir: fileURLToPath(new URL('..', import.meta.url)), name: 'ad' })
-  } catch (e) { console.error('[update] could not start the watch:', e.code || e.message) }
+  } catch (e) { const err = /** @type {{ code?: string, message?: string }} */ (e); console.error('[update] could not start the watch:', err.code || err.message) }
 }
 
 if (process.argv[1] && import.meta.url === 'file://' + process.argv[1]) main()
